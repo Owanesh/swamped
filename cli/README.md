@@ -25,25 +25,11 @@ swamped obfuscate input.wasm -o output.wasm -s nop_insertion shift_transformatio
 # Apply all strategies at once
 swamped obfuscate input.wasm -o output.wasm -s all
 
-# Only structural or only code-level
-swamped obfuscate input.wasm -o output.wasm -s structural
-swamped obfuscate input.wasm -o output.wasm -s code
+# Abort on first failure (useful in CI)
+swamped obfuscate input.wasm -o output.wasm -s all --strict
 
-# Exclude specific strategies with -e
-swamped obfuscate input.wasm -o output.wasm -s all -e data_encryption direct_to_indirect
-swamped obfuscate input.wasm -o output.wasm -s code -e nop_insertion
-
-# Control intensity (0.0 = none, 1.0 = max)
-swamped obfuscate input.wasm -o output.wasm -s all --ratio 0.3
-
-# Validate the output after obfuscation
-swamped obfuscate input.wasm -o output.wasm -s nop_insertion --validate
-
-# Stack operation insertion: all 6 variants (default)
-swamped obfuscate input.wasm -o output.wasm -s stack_op_insertion
-
-# Stack operation insertion: only specific variants
-swamped obfuscate input.wasm -o output.wasm -s stack_op_insertion --stackop m b f
+# Combine seed + diff for reproducible experiments
+swamped obfuscate input.wasm -o output.wasm -s all --seed 42 --diff -t
 ```
 
 Accepts both `.wasm` and `.wast` as input/output — conversion is automatic.
@@ -109,6 +95,11 @@ Example: `swamped obfuscate input.wasm -o out.wasm -s stack_op_insertion --stack
 | `--alpha`    | `1.0`   | Beta-distribution alpha (target selection bias)              |
 | `--beta`     | `1.0`   | Beta-distribution beta (target selection bias)               |
 | `--validate` | off     | Run `wasm-validate` on the output                            |
+| `--seed`     | —       | RNG seed for reproducible runs (see below)                   |
+| `--diff`     | off     | Print a before/after summary of sections and instructions    |
+| `--strict`   | off     | Abort immediately on the first strategy failure              |
+| `-v`         | off     | Verbose (debug-level) logging                                |
+| `-q`         | off     | Quiet mode — only print errors                               |
 
 ## Parameters
 
@@ -126,6 +117,19 @@ Defaults (`alpha=1, beta=1, ratio=1`) match the original project.
 - `alpha=2, beta=2` — bell-shaped, concentrates perturbations in the middle
 
 If you just want to control how much gets changed, `--ratio` is enough. Use `--alpha`/`--beta` when you need finer control over the spatial distribution of perturbations.
+
+**`--seed`** enables **reproducible runs**. Given the same input file, seed, and parameters, SWAMPED will produce the exact same output. This is useful for:
+
+- **Research** — reproduce an experiment exactly and report the seed alongside results
+- **Debugging** — if a run produces an invalid module, re-run with the same seed to investigate
+- **Comparison** — test different strategy sets against the same input with identical perturbation distributions
+
+```bash
+swamped obfuscate input.wasm -o out.wasm -s all --seed 42
+swamped obfuscate input.wasm -o out.wasm -s all --seed 42   # same output
+```
+
+Without `--seed`, every run uses a fresh unseeded RNG (non-deterministic).
 
 ## Preliminary tests
 

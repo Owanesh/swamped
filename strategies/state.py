@@ -2,6 +2,7 @@ PERTURBED_OFFSET = list()
 #Need update
 PERTURBED_INFO = list()
 import numpy as np
+import random as _stdlib_random
 import time
 from scipy.stats import beta
 from wasmParser import sectionStructure as ss
@@ -14,6 +15,16 @@ package_root_directory = file.parents[1]
 # print('__file__={0:<35} | __name__={1:<25} | __package__={2:<25}'.format(__file__,__name__,str(__package__)))
 
 from wasmParser import parser
+
+# Module-level RNG (unseeded by default — same behaviour as before)
+_rng = np.random.default_rng()
+
+def set_seed(seed):
+    """Seed both numpy and stdlib random for reproducible runs.
+    Only called when the user passes --seed on the CLI."""
+    global _rng
+    _rng = np.random.default_rng(seed)
+    _stdlib_random.seed(seed)
 
 # [-] (i)store(8-32), (i,f)load(_s/u)(8-32), (i,f)trunc(_i/f)(32/64)(_s/u), (i64)extend_i32(_s/u), (f32)convert_i(32/64)(_s/u), f64.promote_f32, (i/f)reinterpret_(i/f)(32/64)s
 num_operand = {"add": 2, "sub":2, "mul": 2, "and": 2, "or": 2, "xor": 2, "shl": 2, "shr_s": 2, "shr_u": 2, "rotl": 2, "rotr": 2, \
@@ -438,20 +449,16 @@ OP_ARITY = {
 #############################
 
 def get_dist(_alpha, _beta):
-    
+
     # np.random.seed(int(time.time()))
-    
-    rng = np.random.default_rng()
-    
-    return rng.beta(_alpha, _beta)
+
+    return _rng.beta(_alpha, _beta)
     # return beta.rvs(float(_alpha), float(_beta))
 
 def getDist(_alpha, _beta, _length):
-    
-    rng = np.random.default_rng()
-    
+
     # [TY] -1?
-    return int(rng.beta(1, 1)*_length)
+    return int(_rng.beta(1, 1)*_length)
     
 def add_global(parsedSection, pt_type):
     

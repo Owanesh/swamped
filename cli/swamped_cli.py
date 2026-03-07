@@ -8,6 +8,7 @@ Applies 22 semantics-preserving perturbation methods to WebAssembly modules.
 
 import argparse
 import copy
+import logging
 import os
 import subprocess
 import sys
@@ -22,6 +23,9 @@ if PROJECT_ROOT not in sys.path:
 from wasmParser import parser
 from strategies import structural_perturbation as sp
 from strategies import code_perturbation as cp
+from strategies import state as strategy_state
+
+logger = logging.getLogger("swamped")
 
 # ── Stack Operation Insertion sub-variants ────────────────────────────────
 
@@ -94,7 +98,7 @@ def wasm_to_wast(wasm_path, wast_path):
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        print(f"[error] wasm2wat failed: {result.stderr.strip()}", file=sys.stderr)
+        logger.error("wasm2wat failed: %s", result.stderr.strip())
         sys.exit(1)
 
 
@@ -102,7 +106,7 @@ def resolve_input(input_path, tmp_dir):
     """Return the path to a .wast file, converting from .wasm if necessary."""
     if input_path.endswith(".wasm"):
         wast_path = os.path.join(tmp_dir, os.path.basename(input_path).replace(".wasm", ".wast"))
-        print(f"[*] Converting {input_path} -> WAT ...")
+        logger.info("[*] Converting %s -> WAT ...", input_path)
         wasm_to_wast(input_path, wast_path)
         return wast_path
     return input_path
@@ -124,6 +128,39 @@ def list_strategies():
                 for k, v in STACKOP_VARIANTS.items():
                     print(f"        --stackop-{k:<4s} {v['desc']}")
             idx += 1
+    print()
+
+
+def _count_body_instructions(parsed):
+    """Count total body instructions across all functions."""
+    total = 0
+    for f in parsed.get("Function", {}).values():
+        if f.body:
+            total += len(f.body)
+    return total
+
+
+def _section_counts(parsed):
+    """Return a dict of section_name -> entry count."""
+    return {sec: len(entries) for sec, entries in parsed.items()}
+
+
+def _print_diff(before_counts, before_instructions, after_counts, after_instructions):
+    """Print a summary of what changed."""
+    print("\n  Diff summary:\n")
+    print(f"    {'Section':<20s} {'Before':>8s} {'After':>8s} {'Delta':>8s}")
+    print(f"    {'─' * 20} {'─' * 8} {'─' * 8} {'─' * 8}")
+    for sec in before_counts:
+        b = before_counts[sec]
+        a = after_counts.get(sec, 0)
+        delta = a - b
+        marker = f"+{delta}" if delta > 0 else str(delta) if delta < 0 else "0"
+        if delta != 0:
+            print(f"    {sec:<20s} {b:>8d} {a:>8d} {marker:>8s}")
+    instr_delta = after_instructions - before_instructions
+    marker = f"+{instr_delta}" if instr_delta > 0 else str(instr_delta) if instr_delta < 0 else "0"
+    if instr_delta != 0:
+        print(f"    {'instructions':<20s} {before_instructions:>8d} {after_instructions:>8d} {marker:>8s}")
     print()
 
 
@@ -150,6 +187,7 @@ def build_parser():
               swamped obfuscate input.wasm -o out.wasm -s code -e direct_to_indirect
               swamped obfuscate input.wasm -o out.wasm -s structural --alpha 2 --beta 5
               swamped obfuscate input.wasm -o out.wasm -s stack_op_insertion --stackop m b
+              swamped obfuscate input.wasm -o out.wasm -s all --seed 42 --diff
         """),
     )
     sub = p.add_subparsers(dest="command", required=True)
@@ -207,6 +245,11 @@ def build_parser():
     obf.add_argument("--ratio", type=float, default=1.0, help="Perturbation ratio 0.0-1.0 (default: 1.0)")
     obf.add_argument("--validate", action="store_true", help="Run wasm-validate on the output")
     obf.add_argument("-t", "--timing", action="store_true", help="Show execution time for each strategy")
+    obf.add_argument("--seed", type=int, default=None, help="RNG seed for reproducible runs")
+    obf.add_argument("--diff", action="store_true", help="Show a summary of sections/instructions changed")
+    obf.add_argument("--strict", action="store_true", help="Abort on the first strategy failure")
+    obf.add_argument("-v", "--verbose", action="store_true", help="Enable debug-level logging")
+    obf.add_argument("-q", "--quiet", action="store_true", help="Suppress all output except errors")
 
     return p
 
@@ -224,14 +267,14 @@ def resolve_strategy_names(requested, excluded):
         elif r in STRATEGIES:
             names.append(r)
         else:
-            print(f"[error] Unknown strategy: '{r}'", file=sys.stderr)
-            print(f"        Run 'swamped list' to see available strategies.", file=sys.stderr)
+            logger.error("Unknown strategy: '%s'", r)
+            logger.error("Run 'swamped list' to see available strategies.")
             sys.exit(1)
 
     # Validate exclusions
     for e in excluded:
         if e not in STRATEGIES:
-            print(f"[error] Unknown strategy to exclude: '{e}'", file=sys.stderr)
+            logger.error("Unknown strategy to exclude: '%s'", e)
             sys.exit(1)
     exclude_set = set(excluded)
 
@@ -244,19 +287,19 @@ def resolve_strategy_names(requested, excluded):
             unique.append(n)
 
     if not unique:
-        print("[error] No strategies left after exclusions.", file=sys.stderr)
+        logger.error("No strategies left after exclusions.")
         sys.exit(1)
 
     # Skip not-yet-implemented strategies with a warning
     final = []
     for n in unique:
         if STRATEGIES[n]["fn"] is None:
-            print(f"[warning] {n} is not yet implemented, skipping.", file=sys.stderr)
+            logger.warning("%s is not yet implemented, skipping.", n)
         else:
             final.append(n)
 
     if not final:
-        print("[error] No implemented strategies left.", file=sys.stderr)
+        logger.error("No implemented strategies left.")
         sys.exit(1)
 
     return final
@@ -267,30 +310,41 @@ def cmd_obfuscate(args):
     output_path = os.path.abspath(args.output)
 
     if not os.path.isfile(input_path):
-        print(f"[error] Input file not found: {input_path}", file=sys.stderr)
+        logger.error("Input file not found: %s", input_path)
         sys.exit(1)
 
     output_dir = os.path.dirname(output_path)
     os.makedirs(output_dir, exist_ok=True)
 
+    # Seed RNG if requested
+    if args.seed is not None:
+        strategy_state.set_seed(args.seed)
+        logger.info("[*] RNG seed set to %d", args.seed)
+
     # Convert .wasm to .wast if needed
     wast_path = resolve_input(input_path, output_dir)
 
     # Parse
-    print(f"[*] Parsing {wast_path} ...")
+    logger.info("[*] Parsing %s ...", wast_path)
     with open(wast_path) as f:
         origin_wast = f.readlines()
     parsed = parser.parseWast(origin_wast)
+
+    # Snapshot before-counts for --diff
+    if args.diff:
+        before_counts = _section_counts(parsed)
+        before_instructions = _count_body_instructions(parsed)
 
     # Apply strategies sequentially
     strategy_names = resolve_strategy_names(args.strategies, args.exclude)
     section = copy.deepcopy(parsed)
 
-    print(f"[*] Applying {len(strategy_names)} perturbation(s) (alpha={args.alpha}, beta={args.beta}, ratio={args.ratio}):\n")
+    logger.info("[*] Applying %d perturbation(s) (alpha=%s, beta=%s, ratio=%s):\n",
+                len(strategy_names), args.alpha, args.beta, args.ratio)
     timings = []
     for name in strategy_names:
         entry = STRATEGIES[name]
-        print(f"    -> {name}", end="", flush=True)
+        logger.info("    -> %s", name)
         t0 = time.monotonic()
         try:
             if name == "stack_op_insertion":
@@ -300,57 +354,82 @@ def cmd_obfuscate(args):
             elapsed = time.monotonic() - t0
             timings.append((name, elapsed, True))
             if args.timing:
-                print(f"  ({elapsed:.2f}s)")
-            else:
-                print()
+                logger.info("       (%0.2fs)", elapsed)
         except Exception as e:
             elapsed = time.monotonic() - t0
             timings.append((name, elapsed, False))
-            print()
-            print(f"       [warning] {name} failed: {e}", file=sys.stderr)
+            if args.strict:
+                logger.error("    [error] %s failed: %s", name, e)
+                sys.exit(1)
+            else:
+                logger.warning("    [warning] %s failed: %s", name, e)
 
     if args.timing and len(timings) > 1:
         total = sum(t for _, t, _ in timings)
         slowest = max(timings, key=lambda x: x[1])
-        print(f"\n    total: {total:.2f}s | slowest: {slowest[0]} ({slowest[1]:.2f}s)")
+        logger.info("\n    total: %.2fs | slowest: %s (%.2fs)", total, slowest[0], slowest[1])
+
+    # --diff summary
+    if args.diff:
+        after_counts = _section_counts(section)
+        after_instructions = _count_body_instructions(section)
+        _print_diff(before_counts, before_instructions, after_counts, after_instructions)
 
     # Save output
     output_name = os.path.basename(output_path)
     if output_path.endswith(".wasm"):
         # savePertWasm writes .wast and converts to .wasm
         wast_out = output_path.replace(".wasm", ".wast")
-        print(f"\n[*] Writing {wast_out} ...")
+        logger.info("[*] Writing %s ...", wast_out)
         parser.savePertWasm(output_dir + "/", os.path.basename(wast_out), section)
         if os.path.isfile(output_path):
-            print(f"[+] Done! Output: {output_path}")
+            logger.info("[+] Done! Output: %s", output_path)
         else:
-            print(f"[!] WAT written but wat2wasm conversion may have failed.", file=sys.stderr)
-            print(f"    WAT output: {wast_out}", file=sys.stderr)
+            logger.error("[!] WAT written but wat2wasm conversion may have failed.")
+            logger.error("    WAT output: %s", wast_out)
             sys.exit(1)
     else:
         # .wast output
-        print(f"\n[*] Writing {output_path} ...")
+        logger.info("[*] Writing %s ...", output_path)
         parser.savePertWasm(output_dir + "/", output_name, section)
-        print(f"[+] Done! Output: {output_path}")
+        logger.info("[+] Done! Output: %s", output_path)
 
     # Validate
     if args.validate:
         wasm_file = output_path if output_path.endswith(".wasm") else output_path.replace(".wast", ".wasm")
         if not os.path.isfile(wasm_file):
-            print(f"[!] No .wasm file to validate.", file=sys.stderr)
+            logger.error("[!] No .wasm file to validate.")
             sys.exit(1)
-        print(f"[*] Validating {wasm_file} ...")
+        logger.info("[*] Validating %s ...", wasm_file)
         result = subprocess.run(["wasm-validate", wasm_file], capture_output=True, text=True)
         if result.returncode == 0:
-            print(f"[+] Validation passed.")
+            logger.info("[+] Validation passed.")
         else:
-            print(f"[!] Validation failed: {result.stderr.strip()}", file=sys.stderr)
+            logger.error("[!] Validation failed: %s", result.stderr.strip())
             sys.exit(1)
+
+
+def _setup_logging(verbose=False, quiet=False):
+    """Configure logging. Default output matches the original print() behaviour."""
+    if quiet:
+        level = logging.ERROR
+    elif verbose:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(level)
 
 
 def main():
     p = build_parser()
     args = p.parse_args()
+
+    # Logging setup — only relevant for obfuscate (list always uses print)
+    if args.command == "obfuscate":
+        _setup_logging(verbose=args.verbose, quiet=args.quiet)
 
     if args.command == "list":
         list_strategies()
