@@ -139,14 +139,18 @@ Without `--seed`, every run uses a fresh unseeded RNG (non-deterministic).
 ln -s function_body_tmp100.pkl strategies/data/function_body.pkl
 ```
 
-Strategies could work correctly when applied individually.
+> [!TIP]
+> The CLI takes a snapshot of the section before each strategy. If a strategy crashes mid-execution, the section is automatically rolled back to its pre-strategy state, so partial modifications never corrupt the output.
 
-Known issues:
+> [!WARNING]
+> **There are known issue on specific combos**
+>
+> - `function_insertion* + function_body_cloning`
+>   - `function_insertion` creates functions with `header=''` (empty string) instead of the expected `[[line, tag], ...]` list (`structural_perturbation.py:113`). When `function_body_cloning` runs next on the same section, it tries to access `header[0][0]` on one of those functions (`structural_perturbation.py:184-185`), which crashes because you can't index into an empty string. The CLI rolls back the section on failure, so the output stays valid — but `function_body_cloning` is effectively skipped.
+> - `data_encryption` — injected decryption function may have mismatched signatures on certain modules
 
-- `function_body_cloning` + `function_insertion` — cloned proxy calls break when new functions shift indices
-- `data_encryption` — injected decryption function may have mismatched signatures on certain modules
-
-Use `--validate` to catch failures, and `-e` to exclude problematic strategies:
+> [!NOTE]
+> Use `--validate` to catch failures, and `-e` to exclude problematic strategies:
 
 ```bash
 swamped obfuscate input.wasm -o out.wasm -s structural -e data_encryption function_body_cloning --validate

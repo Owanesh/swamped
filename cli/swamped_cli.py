@@ -345,6 +345,7 @@ def cmd_obfuscate(args):
     for name in strategy_names:
         entry = STRATEGIES[name]
         logger.info("    -> %s", name)
+        snapshot = copy.deepcopy(section)
         t0 = time.monotonic()
         try:
             if name == "stack_op_insertion":
@@ -358,11 +359,12 @@ def cmd_obfuscate(args):
         except Exception as e:
             elapsed = time.monotonic() - t0
             timings.append((name, elapsed, False))
+            section = snapshot  # rollback to avoid corrupted state
             if args.strict:
                 logger.error("    [error] %s failed: %s", name, e)
                 sys.exit(1)
             else:
-                logger.warning("    [warning] %s failed: %s", name, e)
+                logger.warning("    [warning] %s failed (rolled back): %s", name, e)
 
     if args.timing and len(timings) > 1:
         total = sum(t for _, t, _ in timings)
