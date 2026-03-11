@@ -75,7 +75,7 @@ RE_EXPORT = re.compile(r'''
 RE_ELEM = re.compile(r'^\s*\(elem\s+(?P<id>\$\w+)')
 
 RE_DATA = re.compile(
-    r'^\s*\(data\s+(?P<id>\$\w+)\s+\(i32\.const\s+(?P<offset>\d+)\)\s+"(?P<data>.*?)"\)',
+    r'^\s*\(data\s+(?P<id>\$[\w.]+)\s+\(i32\.const\s+(?P<offset>\d+)\)\s+"(?P<data>.*?)"\)',
     re.DOTALL
 )
 # RE_DATA = re.compile("\s+\(data\s+\(;(\d+);")
