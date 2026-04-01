@@ -1314,9 +1314,9 @@ def opaque_predicate_insertion(parsedSection, alpha, beta, ratio):
     for f in functions:
         # print(f)
         function = parsedSection['Function'][f]
-        if function.body == None:
+        if function.body is None or len(function.body) == 0:
             continue
-        
+
         body = function.body
 
         offset_list = list()
