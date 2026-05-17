@@ -264,10 +264,27 @@ def parseWast(origin_wast):
             
             funcHeaderArea = True ##function header line이 여러개인 경우, payload와 분류하기 위해
             funcHeaderLine.append([line, ''])
-            
+
             parsedSection["Function"][funcID] = ss.FUNCTION(type=funcType)
-        
-            
+
+            # Handle single-line functions where brackets balance on one line
+            # e.g. (func $f44 (type $t0) (param $p0 i32))
+            if func_bracketNum == 0:
+                funcHeaderStr = ''.join([h[0].strip() for h in funcHeaderLine])
+                params = parse_param_local_blocks(funcHeaderStr, RE_PARAM)
+                locals_ = parse_param_local_blocks(funcHeaderStr, RE_LOCAL)
+                has_result = re.search(RE_RESULT, funcHeaderStr)
+                result = has_result.group(1) if has_result is not None else None
+
+                parsedSection["Function"][funcID].param = params
+                parsedSection["Function"][funcID].result = result
+                parsedSection["Function"][funcID].local = locals_
+                parsedSection["Function"][funcID].header = funcHeaderLine
+                parsedSection["Function"][funcID].body = []
+
+                funcHeaderArea = False
+                funcHeaderLine = list()
+
         # print(whichSection)
         if 1 not in whichSection and (funcHeaderArea==True or funcBodyArea==True):
             
